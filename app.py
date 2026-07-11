@@ -332,21 +332,66 @@ def page_has_asset_downloads(soup, owner=None, repo=None, release_tag=None):
     return False
 
 
-def append_missing_asset_fragment(soup, owner, repo, release_tag):
-    if page_has_asset_downloads(soup, owner, repo, release_tag):
-        return
-    fragment = asset_fragment_for_release(owner, repo, release_tag)
-    if not fragment or not page_has_asset_downloads(fragment, owner, repo, release_tag):
-        return
+def build_asset_fragment_container(soup, fragment):
     container = soup.new_tag("div")
     container["class"] = "github-proxy-expanded-assets"
     heading = soup.new_tag("h2")
     heading.string = "Assets"
     container.append(heading)
     container.append(fragment)
-    target = soup.find("div", class_=lambda value: value and "release" in value) or soup.body
-    if target:
-        target.append(container)
+    return container
+
+
+def append_missing_asset_fragment(soup, owner, repo, release_tag, target=None):
+    if page_has_asset_downloads(target or soup, owner, repo, release_tag):
+        return False
+    fragment = asset_fragment_for_release(owner, repo, release_tag)
+    if not fragment or not page_has_asset_downloads(fragment, owner, repo, release_tag):
+        return False
+    target = target or soup.find("div", class_=lambda value: value and "release" in value) or soup.body
+    if not target:
+        return False
+    target.append(build_asset_fragment_container(soup, fragment))
+    return True
+
+
+def release_tag_link(tag, owner, repo):
+    href = tag.get("href")
+    if not href:
+        return None
+    match = RELEASE_RE.match(urljoin("https://github.com", href))
+    if not match or (match.group(3) or "").lower() != "tag" or not match.group(4):
+        return None
+    if match.group(1).lower() != owner.lower() or match.group(2).lower() != repo.lower():
+        return None
+    return match.group(4).rstrip("/")
+
+
+def release_container_for_tag_link(tag):
+    for candidate in tag.parents:
+        if candidate.name in {"article", "section"}:
+            return candidate
+        if candidate.name == "div":
+            classes = candidate.get("class") or []
+            class_text = " ".join(classes).lower()
+            if "release" in class_text or "timeline-comment" in class_text or candidate.find(string=re.compile(r"Assets\s+\d+")):
+                return candidate
+    return None
+
+
+def append_missing_asset_fragments_for_release_list(soup, owner, repo):
+    seen = set()
+    for link in soup.find_all("a", href=True):
+        release_tag = release_tag_link(link, owner, repo)
+        if not release_tag or release_tag in seen:
+            continue
+        container = release_container_for_tag_link(link)
+        if not container:
+            continue
+        if not container.find(string=re.compile(r"Assets\s+\d+")):
+            continue
+        append_missing_asset_fragment(soup, owner, repo, release_tag, container)
+        seen.add(release_tag)
 
 
 def tag_expanded_asset_url(tag):
@@ -420,7 +465,10 @@ def proxy_release(encoded_url):
         abort(403)
     soup = BeautifulSoup(upstream.text, "html.parser")
     expand_asset_fragments(soup)
-    append_missing_asset_fragment(soup, owner, repo, release_tag or release_tag_from_url(upstream.url))
+    if release_type == "repo":
+        append_missing_asset_fragments_for_release_list(soup, owner, repo)
+    else:
+        append_missing_asset_fragment(soup, owner, repo, release_tag or release_tag_from_url(upstream.url))
     for tag in soup.find_all(["script", "iframe", "form"]):
         tag.decompose()
     mark_show_all_asset_controls(soup)
