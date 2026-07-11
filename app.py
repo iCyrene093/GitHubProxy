@@ -374,10 +374,6 @@ def tag_link_is_release_title(link):
         if any(body_class in class_text for body_class in release_body_classes):
             return False
 
-    link_classes = set(link.get("class") or [])
-    if "Link--primary" in link_classes:
-        return True
-
     for parent in link.parents:
         classes = parent.get("class") or []
         class_text = " ".join(classes).lower()
