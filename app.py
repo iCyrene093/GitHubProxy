@@ -92,6 +92,8 @@ def normalize_release_url(raw_url):
     if release_type == "tag":
         return owner, repo, normalized, "tag", release_tag.rstrip("/")
     if release_type == "latest":
+        if release_tag:
+            raise ValueError("/releases/latest 后不能包含额外路径")
         return owner, repo, normalized, "latest", None
     return owner, repo, normalized, "repo", None
 
