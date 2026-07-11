@@ -7,9 +7,12 @@ PORT="${PORT:-8000}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SECRET_KEY="${SECRET_KEY:-}"
 ENV_FILE="${ENV_FILE:-/etc/github-release-proxy.env}"
+DEPLOY_REPO_URL="${DEPLOY_REPO_URL:-}"
+DEPLOY_REF="${DEPLOY_REF:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SOURCE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 DEST_DIR="$APP_DIR/app"
+TMP_SOURCE_DIR=""
 
 if [[ $EUID -ne 0 ]]; then
   echo "请使用 root 运行：sudo APP_DIR=$APP_DIR ADMIN_PASSWORD=... $0" >&2
@@ -21,8 +24,25 @@ if [[ -z "$ADMIN_PASSWORD" || "$ADMIN_PASSWORD" == "admin" || "$ADMIN_PASSWORD" 
   exit 1
 fi
 
+cleanup() {
+  if [[ -n "$TMP_SOURCE_DIR" ]]; then
+    rm -rf "$TMP_SOURCE_DIR"
+  fi
+}
+trap cleanup EXIT
+
 apt-get update
 apt-get install -y python3 python3-venv python3-pip git
+
+if [[ ! -f "$SOURCE_DIR/app.py" || ! -f "$SOURCE_DIR/requirements.txt" ]]; then
+  if [[ -z "$DEPLOY_REPO_URL" ]]; then
+    echo "未检测到本地源码。请设置 DEPLOY_REPO_URL=https://github.com/owner/repo.git 以便自动从 GitHub 下载并安装。" >&2
+    exit 1
+  fi
+  TMP_SOURCE_DIR="$(mktemp -d)"
+  git clone --depth 1 --branch "$DEPLOY_REF" "$DEPLOY_REPO_URL" "$TMP_SOURCE_DIR"
+  SOURCE_DIR="$TMP_SOURCE_DIR"
+fi
 
 if [[ -z "$SECRET_KEY" ]]; then
   SECRET_KEY="$(python3 - <<'PY'
