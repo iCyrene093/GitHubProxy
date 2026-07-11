@@ -305,22 +305,33 @@ def release_tag_from_url(url):
 def asset_fragment_for_release(owner, repo, release_tag):
     if not release_tag:
         return None
-    src = f"https://github.com/{owner}/{repo}/releases/expanded_assets/{quote(release_tag, safe='/')}"
+    src = f"https://github.com/{owner}/{repo}/releases/expanded_assets/{quote(release_tag, safe='%')}"
     upstream = fetch_github(src)
     if upstream.status_code >= 400:
         return None
     return BeautifulSoup(upstream.text, "html.parser")
 
 
-def page_has_asset_downloads(soup):
-    return any(ASSET_RE.match(urljoin("https://github.com", a["href"])) for a in soup.find_all("a", href=True))
+def page_has_asset_downloads(soup, owner=None, repo=None, release_tag=None):
+    for link in soup.find_all("a", href=True):
+        match = ASSET_RE.match(urljoin("https://github.com", link["href"]))
+        if not match:
+            continue
+        if owner and match.group(1).lower() != owner.lower():
+            continue
+        if repo and match.group(2).lower() != repo.lower():
+            continue
+        if release_tag and unquote(match.group(3)) != unquote(release_tag):
+            continue
+        return True
+    return False
 
 
 def append_missing_asset_fragment(soup, owner, repo, release_tag):
-    if page_has_asset_downloads(soup):
+    if page_has_asset_downloads(soup, owner, repo, release_tag):
         return
     fragment = asset_fragment_for_release(owner, repo, release_tag)
-    if not fragment or not page_has_asset_downloads(fragment):
+    if not fragment or not page_has_asset_downloads(fragment, owner, repo, release_tag):
         return
     container = soup.new_tag("div")
     container["class"] = "github-proxy-expanded-assets"
