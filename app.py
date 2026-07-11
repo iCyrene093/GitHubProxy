@@ -13,7 +13,7 @@ from flask import Flask, Response, abort, flash, redirect, render_template_strin
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("GITHUB_PROXY_DB", APP_DIR / "data" / "github_proxy.sqlite3"))
 SECRET_KEY = os.environ.get("SECRET_KEY")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "30"))
 USER_AGENT = "GitHubReleaseProxy/1.0 (+https://github.com)"
 RELEASE_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases(?:/(tag|latest)(?:/([^?#]+))?)?/?(?:[?#].*)?$", re.I)
@@ -21,6 +21,8 @@ ASSET_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases/download/(
 
 if not SECRET_KEY or SECRET_KEY == "change-me-before-production":
     raise RuntimeError("SECRET_KEY must be set to a non-default random value")
+if not ADMIN_PASSWORD or ADMIN_PASSWORD in {"admin", "change-this-admin-password"}:
+    raise RuntimeError("ADMIN_PASSWORD must be set to a non-default value")
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -86,7 +88,7 @@ def normalize_release_url(raw_url):
     if path_has_dot_segment(parsed.path):
         raise ValueError("Release 链接不能包含 . 或 .. 路径片段")
     owner, repo, release_type, release_tag = match.group(1), match.group(2), match.group(3), match.group(4)
-    normalized = f"https://github.com/{owner}/{repo}{parsed.path.rstrip('/')}"
+    normalized = f"https://github.com{parsed.path.rstrip('/')}"
     if release_type == "tag":
         return owner, repo, normalized, "tag", release_tag.rstrip("/")
     if release_type == "latest":
@@ -104,6 +106,23 @@ def is_allowed_release(owner, repo, release_type=None, release_tag=None):
         if release_tag and row["release_scope"] == "tag" and row["release_tag"] == release_tag:
             return True
     return False
+
+
+def latest_release_tag(owner, repo):
+    upstream = fetch_github(f"https://github.com/{owner}/{repo}/releases/latest")
+    final_match = RELEASE_RE.match(upstream.url)
+    if upstream.status_code >= 400 or not final_match or final_match.group(3) != "tag":
+        return None
+    return final_match.group(4).rstrip("/")
+
+
+def is_allowed_download(owner, repo, release_tag):
+    if is_allowed_release(owner, repo, "tag", release_tag):
+        return True
+    rows = db_rows("SELECT 1 FROM allowed_releases WHERE lower(owner)=lower(?) AND lower(repo)=lower(?) AND release_scope='latest' LIMIT 1", (owner, repo))
+    if not rows:
+        return False
+    return latest_release_tag(owner, repo) == release_tag
 
 
 def admin_required(view):
@@ -193,6 +212,12 @@ def validate_csrf():
         abort(403)
 
 
+def decode_proxy_target(encoded_url):
+    if encoded_url.startswith(("https://", "http://")):
+        return encoded_url
+    return unquote(encoded_url)
+
+
 def fetch_github(url, stream=False):
     parsed = urlparse(url)
     if path_has_dot_segment(parsed.path):
@@ -216,7 +241,7 @@ def expand_asset_fragments(soup):
 
 @app.route("/release/<path:encoded_url>")
 def proxy_release(encoded_url):
-    target = unquote(encoded_url)
+    target = decode_proxy_target(encoded_url)
     try:
         owner, repo, normalized, release_type, release_tag = normalize_release_url(target)
     except ValueError:
@@ -244,7 +269,7 @@ def proxy_release(encoded_url):
 
 @app.route("/download/<path:encoded_url>")
 def download(encoded_url):
-    target = unquote(encoded_url)
+    target = decode_proxy_target(encoded_url)
     match = ASSET_RE.match(target)
     if not match:
         abort(403)
@@ -252,7 +277,7 @@ def download(encoded_url):
     if path_has_dot_segment(parsed.path):
         abort(403)
     owner, repo, release_tag = match.group(1), match.group(2), match.group(3)
-    if not is_allowed_release(owner, repo, "tag", release_tag):
+    if not is_allowed_download(owner, repo, release_tag):
         abort(403)
     upstream = fetch_github(target, stream=True)
     excluded = {"content-encoding", "content-length", "transfer-encoding", "connection"}

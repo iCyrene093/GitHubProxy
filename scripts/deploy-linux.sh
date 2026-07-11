@@ -4,12 +4,17 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/github-release-proxy}"
 APP_USER="${APP_USER:-githubproxy}"
 PORT="${PORT:-8000}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-change-this-admin-password}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SECRET_KEY="${SECRET_KEY:-}"
 ENV_FILE="${ENV_FILE:-/etc/github-release-proxy.env}"
 
 if [[ $EUID -ne 0 ]]; then
   echo "请使用 root 运行：sudo APP_DIR=$APP_DIR ADMIN_PASSWORD=... $0" >&2
+  exit 1
+fi
+
+if [[ -z "$ADMIN_PASSWORD" || "$ADMIN_PASSWORD" == "admin" || "$ADMIN_PASSWORD" == "change-this-admin-password" ]]; then
+  echo "请设置非默认管理员密码：sudo ADMIN_PASSWORD=... $0" >&2
   exit 1
 fi
 
