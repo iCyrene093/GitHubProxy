@@ -13,6 +13,28 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SOURCE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 DEST_DIR="$APP_DIR/app"
 TMP_SOURCE_DIR=""
+EXISTING_DB_PATH=""
+PRESERVED_APP_DB_DIR=""
+
+read_env_value() {
+  local key="$1"
+  local file="$2"
+  if [[ -f "$file" ]]; then
+    python3 - "$key" "$file" <<'PY'
+import sys
+key, path = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as fh:
+    for line in fh:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        if name == key:
+            print(value.strip().strip('"').strip("'"))
+            break
+PY
+  fi
+}
 
 if [[ $EUID -ne 0 ]]; then
   echo "请使用 root 运行：sudo APP_DIR=$APP_DIR ADMIN_PASSWORD=... $0" >&2
@@ -27,6 +49,9 @@ fi
 cleanup() {
   if [[ -n "$TMP_SOURCE_DIR" ]]; then
     rm -rf "$TMP_SOURCE_DIR"
+  fi
+  if [[ -n "$PRESERVED_APP_DB_DIR" ]]; then
+    rm -rf "$PRESERVED_APP_DB_DIR"
   fi
 }
 trap cleanup EXIT
@@ -45,11 +70,19 @@ if [[ ! -f "$SOURCE_DIR/app.py" || ! -f "$SOURCE_DIR/requirements.txt" ]]; then
 fi
 
 if [[ -z "$SECRET_KEY" ]]; then
+  SECRET_KEY="$(read_env_value SECRET_KEY "$ENV_FILE")"
+fi
+if [[ -z "$SECRET_KEY" ]]; then
   SECRET_KEY="$(python3 - <<'PY'
 import secrets
 print(secrets.token_urlsafe(32))
 PY
 )"
+fi
+
+EXISTING_DB_PATH="$(read_env_value GITHUB_PROXY_DB "$ENV_FILE")"
+if [[ -z "$EXISTING_DB_PATH" ]]; then
+  EXISTING_DB_PATH="$APP_DIR/data/github_proxy.sqlite3"
 fi
 
 id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
@@ -70,9 +103,17 @@ case "$RESOLVED_DEST_DIR" in
         exit 1
         ;;
     esac
+    if [[ -d "$DEST_DIR/data" ]]; then
+      PRESERVED_APP_DB_DIR="$(mktemp -d)"
+      cp -a "$DEST_DIR/data/." "$PRESERVED_APP_DB_DIR/"
+    fi
     rm -rf "$DEST_DIR"
     mkdir -p "$DEST_DIR"
     cp -a "$SOURCE_DIR/." "$DEST_DIR/"
+    if [[ -n "$PRESERVED_APP_DB_DIR" ]]; then
+      mkdir -p "$DEST_DIR/data"
+      cp -a "$PRESERVED_APP_DB_DIR/." "$DEST_DIR/data/"
+    fi
     ;;
 esac
 python3 -m venv "$APP_DIR/venv"
@@ -82,7 +123,7 @@ install -m 600 /dev/null "$ENV_FILE"
 cat > "$ENV_FILE" <<ENV
 ADMIN_PASSWORD=$ADMIN_PASSWORD
 SECRET_KEY=$SECRET_KEY
-GITHUB_PROXY_DB=$APP_DIR/data/github_proxy.sqlite3
+GITHUB_PROXY_DB=$EXISTING_DB_PATH
 ENV
 chmod 600 "$ENV_FILE"
 

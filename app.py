@@ -262,11 +262,21 @@ def fetch_github(url, stream=False):
     return requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT, allow_redirects=True, stream=stream)
 
 
+def expanded_asset_fragment_url(fragment):
+    fragment_src = fragment.get("src") or fragment.get("data-src")
+    if not fragment_src:
+        return None
+    src = urljoin("https://github.com", fragment_src)
+    parsed = urlparse(src)
+    if parsed.netloc.lower() != "github.com" or "/releases/expanded_assets/" not in parsed.path or path_has_dot_segment(parsed.path):
+        return None
+    return src
+
+
 def expand_asset_fragments(soup):
-    for fragment in soup.find_all("include-fragment", src=True):
-        src = urljoin("https://github.com", fragment["src"])
-        parsed = urlparse(src)
-        if parsed.netloc != "github.com" or "/releases/expanded_assets/" not in parsed.path or path_has_dot_segment(parsed.path):
+    for fragment in soup.find_all("include-fragment"):
+        src = expanded_asset_fragment_url(fragment)
+        if not src:
             fragment.decompose()
             continue
         upstream = fetch_github(src)
