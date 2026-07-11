@@ -29,9 +29,21 @@ flask --app app run --host 0.0.0.0 --port 8000
 - `https://github.com/owner/repo/releases/latest`
 - `https://github.com/owner/repo/releases/tag/v1.0.0`
 
-## Linux 服务器部署脚本
+## Linux 服务器一键部署
 
-在服务器上安装代码后，使用 root 执行：
+在 Linux 服务器上使用 root 执行以下命令即可自动从 GitHub 下载代码并安装。请先把命令中的仓库地址替换为你的实际 GitHub 仓库地址，并设置强管理员密码：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/owner/repo/main/scripts/deploy-linux.sh | sudo DEPLOY_REPO_URL=https://github.com/owner/repo.git ADMIN_PASSWORD='请替换为强密码' PORT=8000 bash
+```
+
+如需部署其他分支或标签，可额外设置 `DEPLOY_REF`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/owner/repo/main/scripts/deploy-linux.sh | sudo DEPLOY_REPO_URL=https://github.com/owner/repo.git DEPLOY_REF=main ADMIN_PASSWORD='请替换为强密码' PORT=8000 bash
+```
+
+如果已经在服务器上安装了代码，也可以继续在源码目录中使用本地脚本部署：
 
 ```bash
 sudo ADMIN_PASSWORD='请替换为强密码' PORT=8000 ./scripts/deploy-linux.sh
@@ -41,7 +53,7 @@ sudo ADMIN_PASSWORD='请替换为强密码' PORT=8000 ./scripts/deploy-linux.sh
 
 1. 安装 Python、venv、pip、git。
 2. 创建系统用户 `githubproxy`。
-3. 将程序复制到 `/opt/github-release-proxy/app`。
+3. 自动从 GitHub 下载源码，或将本地源码复制到 `/opt/github-release-proxy/app`。
 4. 创建虚拟环境并安装依赖。
 5. 将敏感环境变量写入仅 root 可读的 `/etc/github-release-proxy.env`。
 6. 写入并重启 `systemd` 服务 `github-release-proxy.service`。
