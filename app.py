@@ -263,7 +263,12 @@ def fetch_github(url, stream=False):
 
 
 def expanded_asset_fragment_url(fragment):
-    fragment_src = fragment.get("src") or fragment.get("data-src")
+    fragment_src = (
+        fragment.get("src")
+        or fragment.get("data-src")
+        or fragment.get("data-url")
+        or fragment.get("data-href")
+    )
     if not fragment_src:
         return None
     src = urljoin("https://github.com", fragment_src)
