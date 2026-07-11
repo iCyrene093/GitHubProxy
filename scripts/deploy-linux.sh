@@ -7,6 +7,9 @@ PORT="${PORT:-8000}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SECRET_KEY="${SECRET_KEY:-}"
 ENV_FILE="${ENV_FILE:-/etc/github-release-proxy.env}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SOURCE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+DEST_DIR="$APP_DIR/app"
 
 if [[ $EUID -ne 0 ]]; then
   echo "请使用 root 运行：sudo APP_DIR=$APP_DIR ADMIN_PASSWORD=... $0" >&2
@@ -31,7 +34,13 @@ fi
 
 id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
 mkdir -p "$APP_DIR" "$APP_DIR/data"
-cp -R . "$APP_DIR/app"
+if [[ "$SOURCE_DIR" != "$(readlink -m "$DEST_DIR")" ]]; then
+  rm -rf "$DEST_DIR"
+  mkdir -p "$DEST_DIR"
+  cp -a "$SOURCE_DIR/." "$DEST_DIR/"
+else
+  echo "检测到部署脚本已从目标应用目录运行，跳过源码复制。"
+fi
 python3 -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/pip" install --upgrade pip
 "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/app/requirements.txt"

@@ -55,6 +55,8 @@ def init_db():
                 continue
             release_type, release_tag = match.group(3), match.group(4)
             if release_type == "tag":
+                if not release_tag:
+                    continue
                 conn.execute("UPDATE allowed_releases SET release_scope=?, release_tag=? WHERE id=?", ("tag", release_tag.rstrip("/"), row_id))
             elif release_type == "latest":
                 conn.execute("UPDATE allowed_releases SET release_scope=?, release_tag=? WHERE id=?", ("latest", "", row_id))
@@ -90,6 +92,8 @@ def normalize_release_url(raw_url):
     owner, repo, release_type, release_tag = match.group(1), match.group(2), match.group(3), match.group(4)
     normalized = f"https://github.com{parsed.path.rstrip('/')}"
     if release_type == "tag":
+        if not release_tag:
+            raise ValueError("/releases/tag 后必须包含非空 tag")
         return owner, repo, normalized, "tag", release_tag.rstrip("/")
     if release_type == "latest":
         if release_tag:
