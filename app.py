@@ -53,7 +53,7 @@ def init_db():
             match = RELEASE_RE.match(release_url)
             if not match:
                 continue
-            release_type, release_tag = match.group(3), match.group(4)
+            release_type, release_tag = (match.group(3) or "").lower(), match.group(4)
             if release_type == "tag":
                 if not release_tag:
                     continue
@@ -78,7 +78,8 @@ def db_execute(query, params=()):
 
 
 def path_has_dot_segment(path):
-    return any(segment in {".", ".."} for segment in path.split("/"))
+    decoded_path = unquote(path)
+    return any(segment in {".", ".."} for segment in decoded_path.split("/"))
 
 
 def normalize_release_url(raw_url):
@@ -89,7 +90,9 @@ def normalize_release_url(raw_url):
     parsed = urlparse(raw_url)
     if path_has_dot_segment(parsed.path):
         raise ValueError("Release 链接不能包含 . 或 .. 路径片段")
-    owner, repo, release_type, release_tag = match.group(1), match.group(2), match.group(3), match.group(4)
+    owner, repo = match.group(1), match.group(2)
+    release_type = (match.group(3) or "").lower()
+    release_tag = match.group(4)
     normalized = f"https://github.com{parsed.path.rstrip('/')}"
     if release_type == "tag":
         if not release_tag:
@@ -117,10 +120,21 @@ def is_allowed_release(owner, repo, release_type=None, release_tag=None):
 def latest_release_tag(owner, repo):
     upstream = fetch_github(f"https://github.com/{owner}/{repo}/releases/latest")
     final_match = RELEASE_RE.match(upstream.url)
-    if upstream.status_code >= 400 or not final_match or final_match.group(3) != "tag":
+    if upstream.status_code >= 400 or not final_match or (final_match.group(3) or "").lower() != "tag":
         return None
     return final_match.group(4).rstrip("/")
 
+
+def final_release_url_is_allowed(final_url, owner, repo, release_type, release_tag):
+    try:
+        final_owner, final_repo, _normalized, final_type, final_tag = normalize_release_url(final_url)
+    except ValueError:
+        return False
+    if final_owner.lower() != owner.lower() or final_repo.lower() != repo.lower():
+        return False
+    if release_type == "latest" and final_type == "tag":
+        return is_allowed_release(owner, repo, "latest")
+    return is_allowed_release(final_owner, final_repo, final_type, final_tag)
 
 def is_allowed_download(owner, repo, release_tag):
     if is_allowed_release(owner, repo, "tag", release_tag):
@@ -257,6 +271,8 @@ def proxy_release(encoded_url):
     upstream = fetch_github(normalized)
     if upstream.status_code >= 400:
         return Response("GitHub upstream error", status=upstream.status_code)
+    if not final_release_url_is_allowed(upstream.url, owner, repo, release_type, release_tag):
+        abort(403)
     soup = BeautifulSoup(upstream.text, "html.parser")
     expand_asset_fragments(soup)
     for tag in soup.find_all(["script", "iframe", "form"]):
