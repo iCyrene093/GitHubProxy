@@ -367,6 +367,24 @@ def release_tag_link(tag, owner, repo):
     return match.group(4).rstrip("/")
 
 
+def tag_link_is_release_heading(link):
+    for parent in link.parents:
+        if parent.name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            return True
+        if parent.name in {"article", "section", "main", "body"}:
+            return False
+        if parent.name == "div":
+            classes = parent.get("class") or []
+            class_text = " ".join(classes).lower()
+            if "release" in class_text or "timeline-comment" in class_text:
+                return False
+    return False
+
+
+def has_asset_count_label(tag):
+    return bool(re.search(r"\bAssets\s+\d+\b", tag.get_text(" ", strip=True)))
+
+
 def release_container_for_tag_link(tag):
     for candidate in tag.parents:
         if candidate.name in {"article", "section"}:
@@ -374,7 +392,7 @@ def release_container_for_tag_link(tag):
         if candidate.name == "div":
             classes = candidate.get("class") or []
             class_text = " ".join(classes).lower()
-            if "release" in class_text or "timeline-comment" in class_text or candidate.find(string=re.compile(r"Assets\s+\d+")):
+            if "release" in class_text or "timeline-comment" in class_text or has_asset_count_label(candidate):
                 return candidate
     return None
 
@@ -383,12 +401,12 @@ def append_missing_asset_fragments_for_release_list(soup, owner, repo):
     seen = set()
     for link in soup.find_all("a", href=True):
         release_tag = release_tag_link(link, owner, repo)
-        if not release_tag or release_tag in seen:
+        if not release_tag or release_tag in seen or not tag_link_is_release_heading(link):
             continue
         container = release_container_for_tag_link(link)
         if not container:
             continue
-        if not container.find(string=re.compile(r"Assets\s+\d+")):
+        if not has_asset_count_label(container):
             continue
         append_missing_asset_fragment(soup, owner, repo, release_tag, container)
         seen.add(release_tag)
