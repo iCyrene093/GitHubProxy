@@ -367,6 +367,16 @@ def release_tag_link(tag, owner, repo):
     return match.group(4).rstrip("/")
 
 
+def link_is_direct_title_child(link, container):
+    inline_title_wrappers = {"span", "strong", "em", "b", "i", "code", "small"}
+    parent = link.parent
+    while parent and parent is not container:
+        if parent.name not in inline_title_wrappers:
+            return False
+        parent = parent.parent
+    return parent is container
+
+
 def tag_link_is_release_title(link):
     release_body_classes = ("markdown-body", "comment-body", "release-body")
     for parent in link.parents:
@@ -386,7 +396,7 @@ def tag_link_is_release_title(link):
             if title_classes.issubset(set(classes)):
                 return True
             if {"flex-1", "wb-break-word"}.issubset(set(classes)):
-                return True
+                return link_is_direct_title_child(link, parent)
         if parent.name in {"article", "section", "main", "body"}:
             return False
     return False

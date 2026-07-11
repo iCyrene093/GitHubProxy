@@ -254,10 +254,10 @@ class ReleaseListAssetFallbackTests(unittest.TestCase):
               <div class="Box-row">
                 <div class="flex-1 wb-break-word">
                   <a class="Link--primary" href="/owner/repo/releases/tag/v2.0.0">Release v2.0.0</a>
+                  <p>See also
+                    <a class="Link--primary" href="/owner/repo/releases/tag/v1.0.0">Release v1.0.0</a>
+                  </p>
                 </div>
-                <p>See also
-                  <a class="Link--primary" href="/owner/repo/releases/tag/v1.0.0">Release v1.0.0</a>
-                </p>
                 <details open>
                   <summary>Assets <span>1</span></summary>
                   <include-fragment>Loading</include-fragment>
