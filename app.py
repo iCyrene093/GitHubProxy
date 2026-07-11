@@ -12,12 +12,15 @@ from flask import Flask, Response, abort, flash, redirect, render_template_strin
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("GITHUB_PROXY_DB", APP_DIR / "data" / "github_proxy.sqlite3"))
-SECRET_KEY = os.environ.get("SECRET_KEY", "change-me-before-production")
+SECRET_KEY = os.environ.get("SECRET_KEY")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "30"))
 USER_AGENT = "GitHubReleaseProxy/1.0 (+https://github.com)"
-RELEASE_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases(?:/(?:tag|latest)(?:/[^?#]+)?)?/?(?:[?#].*)?$", re.I)
-ASSET_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^?#]+)(?:[?#].*)?$", re.I)
+RELEASE_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases(?:/(tag|latest)(?:/([^?#]+))?)?/?(?:[?#].*)?$", re.I)
+ASSET_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/?#]+)/([^/?#]+)(?:[?#].*)?$", re.I)
+
+if not SECRET_KEY or SECRET_KEY == "change-me-before-production":
+    raise RuntimeError("SECRET_KEY must be set to a non-default random value")
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -33,10 +36,28 @@ def init_db():
                 owner TEXT NOT NULL,
                 repo TEXT NOT NULL,
                 release_url TEXT NOT NULL UNIQUE,
+                release_scope TEXT NOT NULL DEFAULT 'repo',
+                release_tag TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(allowed_releases)")}
+        if "release_scope" not in existing_columns:
+            conn.execute("ALTER TABLE allowed_releases ADD COLUMN release_scope TEXT NOT NULL DEFAULT 'repo'")
+        if "release_tag" not in existing_columns:
+            conn.execute("ALTER TABLE allowed_releases ADD COLUMN release_tag TEXT")
+        for row_id, release_url in conn.execute("SELECT id, release_url FROM allowed_releases WHERE release_tag IS NULL"):
+            match = RELEASE_RE.match(release_url)
+            if not match:
+                continue
+            release_type, release_tag = match.group(3), match.group(4)
+            if release_type == "tag":
+                conn.execute("UPDATE allowed_releases SET release_scope=?, release_tag=? WHERE id=?", ("tag", release_tag.rstrip("/"), row_id))
+            elif release_type == "latest":
+                conn.execute("UPDATE allowed_releases SET release_scope=?, release_tag=? WHERE id=?", ("latest", "", row_id))
+            else:
+                conn.execute("UPDATE allowed_releases SET release_scope=?, release_tag=? WHERE id=?", ("repo", "", row_id))
         conn.commit()
 
 
@@ -52,19 +73,37 @@ def db_execute(query, params=()):
         conn.commit()
 
 
+def path_has_dot_segment(path):
+    return any(segment in {".", ".."} for segment in path.split("/"))
+
+
 def normalize_release_url(raw_url):
     raw_url = raw_url.strip()
     match = RELEASE_RE.match(raw_url)
     if not match:
         raise ValueError("只允许添加形如 https://github.com/{owner}/{repo}/releases、/releases/latest 或 /releases/tag/{tag} 的链接")
-    owner, repo = match.group(1), match.group(2)
     parsed = urlparse(raw_url)
+    if path_has_dot_segment(parsed.path):
+        raise ValueError("Release 链接不能包含 . 或 .. 路径片段")
+    owner, repo, release_type, release_tag = match.group(1), match.group(2), match.group(3), match.group(4)
     normalized = f"https://github.com/{owner}/{repo}{parsed.path.rstrip('/')}"
-    return owner, repo, normalized
+    if release_type == "tag":
+        return owner, repo, normalized, "tag", release_tag.rstrip("/")
+    if release_type == "latest":
+        return owner, repo, normalized, "latest", None
+    return owner, repo, normalized, "repo", None
 
 
-def is_allowed_repo(owner, repo):
-    return bool(db_rows("SELECT 1 FROM allowed_releases WHERE lower(owner)=lower(?) AND lower(repo)=lower(?) LIMIT 1", (owner, repo)))
+def is_allowed_release(owner, repo, release_type=None, release_tag=None):
+    rows = db_rows("SELECT release_scope, release_tag FROM allowed_releases WHERE lower(owner)=lower(?) AND lower(repo)=lower(?)", (owner, repo))
+    for row in rows:
+        if row["release_scope"] == "repo":
+            return True
+        if release_type == "latest" and row["release_scope"] == "latest":
+            return True
+        if release_tag and row["release_scope"] == "tag" and row["release_tag"] == release_tag:
+            return True
+    return False
 
 
 def admin_required(view):
@@ -119,44 +158,76 @@ def admin_logout():
 @admin_required
 def admin():
     if request.method == "POST":
+        validate_csrf()
         try:
-            owner, repo, release_url = normalize_release_url(request.form.get("release_url", ""))
-            db_execute("INSERT OR IGNORE INTO allowed_releases(owner, repo, release_url) VALUES (?, ?, ?)", (owner, repo, release_url))
+            owner, repo, release_url, release_scope, release_tag = normalize_release_url(request.form.get("release_url", ""))
+            db_execute("INSERT OR IGNORE INTO allowed_releases(owner, repo, release_url, release_scope, release_tag) VALUES (?, ?, ?, ?, ?)", (owner, repo, release_url, release_scope, release_tag))
             flash("已添加白名单")
         except ValueError as exc:
             flash(str(exc))
         return redirect(url_for("admin"))
     rows = db_rows("SELECT * FROM allowed_releases ORDER BY created_at DESC")
-    table = "".join(f"<tr><td>{escape(r['owner'])}/{escape(r['repo'])}</td><td><a href='{url_for('proxy_release', encoded_url=quote(r['release_url'], safe=''))}'>{escape(r['release_url'])}</a></td><td><form method='post' action='{url_for('delete_release', release_id=r['id'])}'><button>删除</button></form></td></tr>" for r in rows)
-    body = f"<p><a href='{url_for('index')}'>返回首页</a> · <a href='{url_for('admin_logout')}'>退出</a></p><div class='card'><form method='post'><p><input name='release_url' placeholder='https://github.com/owner/repo/releases 或 /releases/tag/v1.0.0' required></p><button>添加允许访问的 Release</button></form></div><table><tr><th>仓库</th><th>Release 链接</th><th>操作</th></tr>{table}</table>"
+    csrf_token = get_csrf_token()
+    table = "".join(f"<tr><td>{escape(r['owner'])}/{escape(r['repo'])}</td><td><a href='{url_for('proxy_release', encoded_url=quote(r['release_url'], safe=''))}'>{escape(r['release_url'])}</a></td><td><form method='post' action='{url_for('delete_release', release_id=r['id'])}'><input type='hidden' name='csrf_token' value='{csrf_token}'><button>删除</button></form></td></tr>" for r in rows)
+    body = f"<p><a href='{url_for('index')}'>返回首页</a> · <a href='{url_for('admin_logout')}'>退出</a></p><div class='card'><form method='post'><input type='hidden' name='csrf_token' value='{csrf_token}'><p><input name='release_url' placeholder='https://github.com/owner/repo/releases 或 /releases/tag/v1.0.0' required></p><button>添加允许访问的 Release</button></form></div><table><tr><th>仓库</th><th>Release 链接</th><th>操作</th></tr>{table}</table>"
     return page("后台管理", body)
 
 
 @app.route("/admin/delete/<int:release_id>", methods=["POST"])
 @admin_required
 def delete_release(release_id):
+    validate_csrf()
     db_execute("DELETE FROM allowed_releases WHERE id=?", (release_id,))
     flash("已删除")
     return redirect(url_for("admin"))
 
 
+def get_csrf_token():
+    if "csrf_token" not in session:
+        session["csrf_token"] = os.urandom(32).hex()
+    return session["csrf_token"]
+
+
+def validate_csrf():
+    if not session.get("csrf_token") or request.form.get("csrf_token") != session["csrf_token"]:
+        abort(403)
+
+
 def fetch_github(url, stream=False):
+    parsed = urlparse(url)
+    if path_has_dot_segment(parsed.path):
+        abort(403)
     return requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT, allow_redirects=True, stream=stream)
+
+
+def expand_asset_fragments(soup):
+    for fragment in soup.find_all("include-fragment", src=True):
+        src = urljoin("https://github.com", fragment["src"])
+        parsed = urlparse(src)
+        if parsed.netloc != "github.com" or "/releases/expanded_assets/" not in parsed.path or path_has_dot_segment(parsed.path):
+            fragment.decompose()
+            continue
+        upstream = fetch_github(src)
+        if upstream.status_code >= 400:
+            fragment.decompose()
+            continue
+        fragment.replace_with(BeautifulSoup(upstream.text, "html.parser"))
 
 
 @app.route("/release/<path:encoded_url>")
 def proxy_release(encoded_url):
     target = unquote(encoded_url)
     try:
-        owner, repo, normalized = normalize_release_url(target)
+        owner, repo, normalized, release_type, release_tag = normalize_release_url(target)
     except ValueError:
         abort(403)
-    if not is_allowed_repo(owner, repo):
+    if not is_allowed_release(owner, repo, release_type, release_tag):
         abort(403)
     upstream = fetch_github(normalized)
     if upstream.status_code >= 400:
         return Response("GitHub upstream error", status=upstream.status_code)
     soup = BeautifulSoup(upstream.text, "html.parser")
+    expand_asset_fragments(soup)
     for tag in soup.find_all(["script", "iframe", "form"]):
         tag.decompose()
     for a in soup.find_all("a", href=True):
@@ -177,8 +248,11 @@ def download(encoded_url):
     match = ASSET_RE.match(target)
     if not match:
         abort(403)
-    owner, repo = match.group(1), match.group(2)
-    if not is_allowed_repo(owner, repo):
+    parsed = urlparse(target)
+    if path_has_dot_segment(parsed.path):
+        abort(403)
+    owner, repo, release_tag = match.group(1), match.group(2), match.group(3)
+    if not is_allowed_release(owner, repo, "tag", release_tag):
         abort(403)
     upstream = fetch_github(target, stream=True)
     excluded = {"content-encoding", "content-length", "transfer-encoding", "connection"}
