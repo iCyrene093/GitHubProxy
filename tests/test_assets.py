@@ -22,6 +22,20 @@ class AssetFragmentExpansionTests(unittest.TestCase):
             "https://github.com/owner/repo/releases/expanded_assets/v1.0.0",
         )
 
+    def test_expanded_asset_fragment_url_uses_valid_fallback_attribute(self):
+        soup = BeautifulSoup(
+            (
+                '<react-partial data-url="/owner/repo/releases/metadata/v1.0.0" '
+                'data-href="/owner/repo/releases/expanded_assets/v1.0.0"></react-partial>'
+            ),
+            "html.parser",
+        )
+
+        self.assertEqual(
+            app.expanded_asset_fragment_url(soup.find("react-partial")),
+            "https://github.com/owner/repo/releases/expanded_assets/v1.0.0",
+        )
+
     def test_expand_asset_fragments_replaces_data_url_partial(self):
         soup = BeautifulSoup(
             '<main><react-partial data-url="/owner/repo/releases/expanded_assets/v1.0.0"></react-partial></main>',

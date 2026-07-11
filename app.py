@@ -263,19 +263,19 @@ def fetch_github(url, stream=False):
 
 
 def expanded_asset_fragment_url(fragment):
-    fragment_src = (
-        fragment.get("src")
-        or fragment.get("data-src")
-        or fragment.get("data-url")
-        or fragment.get("data-href")
-    )
-    if not fragment_src:
-        return None
-    src = urljoin("https://github.com", fragment_src)
-    parsed = urlparse(src)
-    if parsed.netloc.lower() != "github.com" or "/releases/expanded_assets/" not in parsed.path or path_has_dot_segment(parsed.path):
-        return None
-    return src
+    for attr in ("src", "data-src", "data-url", "data-href"):
+        fragment_src = fragment.get(attr)
+        if not fragment_src:
+            continue
+        src = urljoin("https://github.com", fragment_src)
+        parsed = urlparse(src)
+        if (
+            parsed.netloc.lower() == "github.com"
+            and "/releases/expanded_assets/" in parsed.path
+            and not path_has_dot_segment(parsed.path)
+        ):
+            return src
+    return None
 
 
 def is_expanded_asset_url(url):
