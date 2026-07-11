@@ -367,17 +367,26 @@ def release_tag_link(tag, owner, repo):
     return match.group(4).rstrip("/")
 
 
-def tag_link_is_release_heading(link):
+def tag_link_is_release_title(link):
+    release_body_classes = ("markdown-body", "comment-body", "release-body")
     for parent in link.parents:
+        class_text = " ".join(parent.get("class") or []).lower()
+        if any(body_class in class_text for body_class in release_body_classes):
+            return False
+
+    for parent in link.parents:
+        classes = parent.get("class") or []
+        class_text = " ".join(classes).lower()
         if parent.name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             return True
-        if parent.name in {"article", "section", "main", "body"}:
-            return False
         if parent.name == "div":
-            classes = parent.get("class") or []
-            class_text = " ".join(classes).lower()
             if "release" in class_text or "timeline-comment" in class_text:
                 return False
+            title_classes = {"f1", "flex-auto", "min-width-0", "text-normal"}
+            if title_classes.issubset(set(classes)):
+                return True
+        if parent.name in {"article", "section", "main", "body"}:
+            return False
     return False
 
 
@@ -401,7 +410,7 @@ def append_missing_asset_fragments_for_release_list(soup, owner, repo):
     seen = set()
     for link in soup.find_all("a", href=True):
         release_tag = release_tag_link(link, owner, repo)
-        if not release_tag or release_tag in seen or not tag_link_is_release_heading(link):
+        if not release_tag or release_tag in seen or not tag_link_is_release_title(link):
             continue
         container = release_container_for_tag_link(link)
         if not container:
