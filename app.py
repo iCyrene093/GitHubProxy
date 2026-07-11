@@ -278,8 +278,12 @@ def is_expanded_asset_url(url):
     return parsed.netloc.lower() == "github.com" and "/releases/expanded_assets/" in parsed.path and not path_has_dot_segment(parsed.path)
 
 
+def expanded_asset_fragment_tags(soup):
+    return soup.find_all(lambda tag: tag.name == "include-fragment" or expanded_asset_fragment_url(tag))
+
+
 def expand_asset_fragments(soup):
-    for fragment in soup.find_all("include-fragment"):
+    for fragment in expanded_asset_fragment_tags(soup):
         src = expanded_asset_fragment_url(fragment)
         if not src:
             fragment.decompose()
@@ -289,6 +293,44 @@ def expand_asset_fragments(soup):
             fragment.decompose()
             continue
         fragment.replace_with(BeautifulSoup(upstream.text, "html.parser"))
+
+
+def release_tag_from_url(url):
+    match = RELEASE_RE.match(url)
+    if match and (match.group(3) or "").lower() == "tag" and match.group(4):
+        return match.group(4).rstrip("/")
+    return None
+
+
+def asset_fragment_for_release(owner, repo, release_tag):
+    if not release_tag:
+        return None
+    src = f"https://github.com/{owner}/{repo}/releases/expanded_assets/{quote(release_tag, safe='/')}"
+    upstream = fetch_github(src)
+    if upstream.status_code >= 400:
+        return None
+    return BeautifulSoup(upstream.text, "html.parser")
+
+
+def page_has_asset_downloads(soup):
+    return any(ASSET_RE.match(urljoin("https://github.com", a["href"])) for a in soup.find_all("a", href=True))
+
+
+def append_missing_asset_fragment(soup, owner, repo, release_tag):
+    if page_has_asset_downloads(soup):
+        return
+    fragment = asset_fragment_for_release(owner, repo, release_tag)
+    if not fragment or not page_has_asset_downloads(fragment):
+        return
+    container = soup.new_tag("div")
+    container["class"] = "github-proxy-expanded-assets"
+    heading = soup.new_tag("h2")
+    heading.string = "Assets"
+    container.append(heading)
+    container.append(fragment)
+    target = soup.find("div", class_=lambda value: value and "release" in value) or soup.body
+    if target:
+        target.append(container)
 
 
 def tag_expanded_asset_url(tag):
@@ -362,6 +404,7 @@ def proxy_release(encoded_url):
         abort(403)
     soup = BeautifulSoup(upstream.text, "html.parser")
     expand_asset_fragments(soup)
+    append_missing_asset_fragment(soup, owner, repo, release_tag or release_tag_from_url(upstream.url))
     for tag in soup.find_all(["script", "iframe", "form"]):
         tag.decompose()
     mark_show_all_asset_controls(soup)
