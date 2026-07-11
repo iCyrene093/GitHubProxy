@@ -1,0 +1,195 @@
+import os
+import re
+import sqlite3
+from functools import wraps
+from html import escape
+from pathlib import Path
+from urllib.parse import quote, unquote, urljoin, urlparse
+
+import requests
+from bs4 import BeautifulSoup
+from flask import Flask, Response, abort, flash, redirect, render_template_string, request, session, url_for
+
+APP_DIR = Path(__file__).resolve().parent
+DB_PATH = Path(os.environ.get("GITHUB_PROXY_DB", APP_DIR / "data" / "github_proxy.sqlite3"))
+SECRET_KEY = os.environ.get("SECRET_KEY", "change-me-before-production")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
+REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "30"))
+USER_AGENT = "GitHubReleaseProxy/1.0 (+https://github.com)"
+RELEASE_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases(?:/(?:tag|latest)(?:/[^?#]+)?)?/?(?:[?#].*)?$", re.I)
+ASSET_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^?#]+)(?:[?#].*)?$", re.I)
+
+app = Flask(__name__)
+app.secret_key = SECRET_KEY
+
+
+def init_db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS allowed_releases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner TEXT NOT NULL,
+                repo TEXT NOT NULL,
+                release_url TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.commit()
+
+
+def db_rows(query, params=()):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(query, params).fetchall()
+
+
+def db_execute(query, params=()):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(query, params)
+        conn.commit()
+
+
+def normalize_release_url(raw_url):
+    raw_url = raw_url.strip()
+    match = RELEASE_RE.match(raw_url)
+    if not match:
+        raise ValueError("只允许添加形如 https://github.com/{owner}/{repo}/releases、/releases/latest 或 /releases/tag/{tag} 的链接")
+    owner, repo = match.group(1), match.group(2)
+    parsed = urlparse(raw_url)
+    normalized = f"https://github.com/{owner}/{repo}{parsed.path.rstrip('/')}"
+    return owner, repo, normalized
+
+
+def is_allowed_repo(owner, repo):
+    return bool(db_rows("SELECT 1 FROM allowed_releases WHERE lower(owner)=lower(?) AND lower(repo)=lower(?) LIMIT 1", (owner, repo)))
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not session.get("admin_authenticated"):
+            return redirect(url_for("admin_login", next=request.path))
+        return view(*args, **kwargs)
+    return wrapper
+
+
+BASE_HTML = """
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title><style>body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem;line-height:1.6}input{padding:.55rem;width:min(100%,560px)}button,a.button{padding:.55rem .9rem;border:0;background:#0969da;color:white;text-decoration:none;border-radius:6px;cursor:pointer}.card{border:1px solid #d0d7de;border-radius:8px;padding:1rem;margin:1rem 0}.msg{background:#fff8c5;padding:.7rem;border-radius:6px}code{background:#f6f8fa;padding:.1rem .25rem;border-radius:4px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #d0d7de;padding:.5rem;text-align:left}</style></head>
+<body><h1>{{ title }}</h1>{% with messages = get_flashed_messages() %}{% if messages %}{% for m in messages %}<p class="msg">{{ m }}</p>{% endfor %}{% endif %}{% endwith %}{{ body|safe }}</body></html>
+"""
+
+
+def page(title, body):
+    return render_template_string(BASE_HTML, title=title, body=body)
+
+
+@app.before_request
+def setup():
+    init_db()
+
+
+@app.route("/")
+def index():
+    rows = db_rows("SELECT * FROM allowed_releases ORDER BY owner, repo, release_url")
+    items = "".join(f"<li><a href='{url_for('proxy_release', encoded_url=quote(r['release_url'], safe=''))}'>{escape(r['release_url'])}</a></li>" for r in rows)
+    return page("GitHub Release 代理", f"<div class='card'><p>只能代理后台白名单中的 GitHub Release 页面及其 Release 文件下载。</p><p><a class='button' href='{url_for('admin')}'>后台管理</a></p></div><h2>允许访问的 Release</h2><ul>{items or '<li>暂无白名单</li>'}</ul>")
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    if request.method == "POST":
+        if request.form.get("password") == ADMIN_PASSWORD:
+            session["admin_authenticated"] = True
+            return redirect(request.args.get("next") or url_for("admin"))
+        flash("密码错误")
+    return page("后台登录", "<form method='post'><p><input type='password' name='password' placeholder='管理员密码'></p><button>登录</button></form>")
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.clear()
+    return redirect(url_for("index"))
+
+
+@app.route("/admin", methods=["GET", "POST"])
+@admin_required
+def admin():
+    if request.method == "POST":
+        try:
+            owner, repo, release_url = normalize_release_url(request.form.get("release_url", ""))
+            db_execute("INSERT OR IGNORE INTO allowed_releases(owner, repo, release_url) VALUES (?, ?, ?)", (owner, repo, release_url))
+            flash("已添加白名单")
+        except ValueError as exc:
+            flash(str(exc))
+        return redirect(url_for("admin"))
+    rows = db_rows("SELECT * FROM allowed_releases ORDER BY created_at DESC")
+    table = "".join(f"<tr><td>{escape(r['owner'])}/{escape(r['repo'])}</td><td><a href='{url_for('proxy_release', encoded_url=quote(r['release_url'], safe=''))}'>{escape(r['release_url'])}</a></td><td><form method='post' action='{url_for('delete_release', release_id=r['id'])}'><button>删除</button></form></td></tr>" for r in rows)
+    body = f"<p><a href='{url_for('index')}'>返回首页</a> · <a href='{url_for('admin_logout')}'>退出</a></p><div class='card'><form method='post'><p><input name='release_url' placeholder='https://github.com/owner/repo/releases 或 /releases/tag/v1.0.0' required></p><button>添加允许访问的 Release</button></form></div><table><tr><th>仓库</th><th>Release 链接</th><th>操作</th></tr>{table}</table>"
+    return page("后台管理", body)
+
+
+@app.route("/admin/delete/<int:release_id>", methods=["POST"])
+@admin_required
+def delete_release(release_id):
+    db_execute("DELETE FROM allowed_releases WHERE id=?", (release_id,))
+    flash("已删除")
+    return redirect(url_for("admin"))
+
+
+def fetch_github(url, stream=False):
+    return requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT, allow_redirects=True, stream=stream)
+
+
+@app.route("/release/<path:encoded_url>")
+def proxy_release(encoded_url):
+    target = unquote(encoded_url)
+    try:
+        owner, repo, normalized = normalize_release_url(target)
+    except ValueError:
+        abort(403)
+    if not is_allowed_repo(owner, repo):
+        abort(403)
+    upstream = fetch_github(normalized)
+    if upstream.status_code >= 400:
+        return Response("GitHub upstream error", status=upstream.status_code)
+    soup = BeautifulSoup(upstream.text, "html.parser")
+    for tag in soup.find_all(["script", "iframe", "form"]):
+        tag.decompose()
+    for a in soup.find_all("a", href=True):
+        href = urljoin("https://github.com", a["href"])
+        if ASSET_RE.match(href):
+            a["href"] = url_for("download", encoded_url=quote(href, safe=""))
+        elif RELEASE_RE.match(href):
+            a["href"] = url_for("proxy_release", encoded_url=quote(href, safe=""))
+        else:
+            a["href"] = "#blocked"
+            a["title"] = "该代理仅允许访问白名单 Release 页面和 Release 下载文件"
+    return Response(str(soup), content_type="text/html; charset=utf-8")
+
+
+@app.route("/download/<path:encoded_url>")
+def download(encoded_url):
+    target = unquote(encoded_url)
+    match = ASSET_RE.match(target)
+    if not match:
+        abort(403)
+    owner, repo = match.group(1), match.group(2)
+    if not is_allowed_repo(owner, repo):
+        abort(403)
+    upstream = fetch_github(target, stream=True)
+    excluded = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+    headers = [(k, v) for k, v in upstream.headers.items() if k.lower() not in excluded]
+    return Response(upstream.iter_content(chunk_size=8192), status=upstream.status_code, headers=headers)
+
+
+@app.errorhandler(403)
+def forbidden(_):
+    return page("禁止访问", "<p>该代理只允许访问后台白名单中的 GitHub Release 页面以及这些仓库的 Release 下载文件。</p>"), 403
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
