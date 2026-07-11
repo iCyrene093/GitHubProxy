@@ -273,6 +273,11 @@ def expanded_asset_fragment_url(fragment):
     return src
 
 
+def is_expanded_asset_url(url):
+    parsed = urlparse(url)
+    return parsed.netloc.lower() == "github.com" and "/releases/expanded_assets/" in parsed.path and not path_has_dot_segment(parsed.path)
+
+
 def expand_asset_fragments(soup):
     for fragment in soup.find_all("include-fragment"):
         src = expanded_asset_fragment_url(fragment)
@@ -284,6 +289,61 @@ def expand_asset_fragments(soup):
             fragment.decompose()
             continue
         fragment.replace_with(BeautifulSoup(upstream.text, "html.parser"))
+
+
+def tag_expanded_asset_url(tag):
+    for attr in ("href", "data-url", "data-href"):
+        value = tag.get(attr)
+        if not value:
+            continue
+        url = urljoin("https://github.com", value)
+        if is_expanded_asset_url(url):
+            return url
+    return None
+
+
+def mark_show_all_asset_controls(soup):
+    for tag in soup.find_all(["a", "button"]):
+        if not tag_expanded_asset_url(tag):
+            continue
+        tag["data-github-proxy-show-assets"] = "true"
+        if tag.name == "a":
+            tag["href"] = "#"
+        if tag.name == "button" and not tag.get("type"):
+            tag["type"] = "button"
+
+
+def append_asset_toggle_script(soup):
+    if not soup.body:
+        return
+    script = soup.new_tag("script")
+    script.string = """
+(() => {
+  const hiddenSelectors = '[hidden], .d-none, .js-release-asset, .js-release-asset-read-more';
+  const hasHiddenAssetsOutsideControl = (root, control) => (
+    Array.from(root.querySelectorAll(hiddenSelectors)).some((node) => node !== control && !control.contains(node))
+  );
+  const assetRootFor = (control) => {
+    for (let root = control.parentElement; root && root !== document.body; root = root.parentElement) {
+      if (hasHiddenAssetsOutsideControl(root, control)) return root;
+    }
+    return document;
+  };
+  document.addEventListener('click', (event) => {
+    const control = event.target.closest('[data-github-proxy-show-assets="true"]');
+    if (!control) return;
+    event.preventDefault();
+    assetRootFor(control).querySelectorAll(hiddenSelectors).forEach((node) => {
+      node.hidden = false;
+      node.removeAttribute('hidden');
+      node.classList.remove('d-none');
+    });
+    control.hidden = true;
+    control.setAttribute('aria-expanded', 'true');
+  });
+})();
+"""
+    soup.body.append(script)
 
 
 @app.route("/release/<path:encoded_url>")
@@ -304,15 +364,23 @@ def proxy_release(encoded_url):
     expand_asset_fragments(soup)
     for tag in soup.find_all(["script", "iframe", "form"]):
         tag.decompose()
+    mark_show_all_asset_controls(soup)
     for a in soup.find_all("a", href=True):
+        if a.get("data-github-proxy-show-assets") == "true":
+            a["href"] = "#"
+            continue
         href = urljoin("https://github.com", a["href"])
         if ASSET_RE.match(href):
             a["href"] = url_for("download", encoded_url=quote(href, safe=""))
+        elif is_expanded_asset_url(href):
+            a["data-github-proxy-show-assets"] = "true"
+            a["href"] = "#"
         elif RELEASE_RE.match(href):
             a["href"] = url_for("proxy_release", encoded_url=quote(href, safe=""))
         else:
             a["href"] = "#blocked"
             a["title"] = "该代理仅允许访问白名单 Release 页面和 Release 下载文件"
+    append_asset_toggle_script(soup)
     return Response(str(soup), content_type="text/html; charset=utf-8")
 
 
