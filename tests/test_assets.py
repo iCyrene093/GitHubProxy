@@ -217,6 +217,82 @@ class ReleaseListAssetFallbackTests(unittest.TestCase):
         fetch_github.assert_called_once_with("https://github.com/owner/repo/releases/expanded_assets/v1.0.0")
         self.assertTrue(app.page_has_asset_downloads(soup, "owner", "repo", "v1.0.0"))
 
+    def test_append_missing_asset_fragments_accepts_primary_link_release_titles(self):
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <div class="Box-row">
+                <div class="flex-1 wb-break-word">
+                  <a class="Link--primary" href="/owner/repo/releases/tag/v1.0.0">Release v1.0.0</a>
+                </div>
+                <details open>
+                  <summary>Assets <span>1</span></summary>
+                  <include-fragment>Loading</include-fragment>
+                </details>
+              </div>
+            </body></html>
+            """,
+            "html.parser",
+        )
+
+        with patch(
+            "app.fetch_github",
+            return_value=Mock(
+                status_code=200,
+                text='<a href="/owner/repo/releases/download/v1.0.0/new.zip">new.zip</a>',
+            ),
+        ) as fetch_github:
+            app.append_missing_asset_fragments_for_release_list(soup, "owner", "repo")
+
+        fetch_github.assert_called_once_with("https://github.com/owner/repo/releases/expanded_assets/v1.0.0")
+        self.assertTrue(app.page_has_asset_downloads(soup, "owner", "repo", "v1.0.0"))
+
+    def test_append_missing_asset_fragments_ignores_primary_cross_references(self):
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <div class="Box-row">
+                <div class="flex-1 wb-break-word">
+                  <a class="Link--primary" href="/owner/repo/releases/tag/v2.0.0">Release v2.0.0</a>
+                  <p>See also
+                    <a class="Link--primary" href="/owner/repo/releases/tag/v1.0.0">Release v1.0.0</a>
+                  </p>
+                </div>
+                <details open>
+                  <summary>Assets <span>1</span></summary>
+                  <include-fragment>Loading</include-fragment>
+                </details>
+              </div>
+              <div class="Box-row">
+                <div class="flex-1 wb-break-word">
+                  <a class="Link--primary" href="/owner/repo/releases/tag/v1.0.0">Release v1.0.0</a>
+                </div>
+                <details open>
+                  <summary>Assets <span>1</span></summary>
+                  <include-fragment>Loading</include-fragment>
+                </details>
+              </div>
+            </body></html>
+            """,
+            "html.parser",
+        )
+
+        def fake_fetch(url):
+            tag = url.rsplit("/", 1)[-1]
+            return Mock(
+                status_code=200,
+                text=f'<a href="/owner/repo/releases/download/{tag}/{tag}.zip">{tag}.zip</a>',
+            )
+
+        with patch("app.fetch_github", side_effect=fake_fetch) as fetch_github:
+            app.append_missing_asset_fragments_for_release_list(soup, "owner", "repo")
+
+        self.assertEqual(fetch_github.call_count, 2)
+        rows = soup.select(".Box-row")
+        self.assertTrue(app.page_has_asset_downloads(rows[0], "owner", "repo", "v2.0.0"))
+        self.assertFalse(app.page_has_asset_downloads(rows[0], "owner", "repo", "v1.0.0"))
+        self.assertTrue(app.page_has_asset_downloads(rows[1], "owner", "repo", "v1.0.0"))
+
 
 if __name__ == "__main__":
     unittest.main()
