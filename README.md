@@ -31,19 +31,19 @@ flask --app app run --host 0.0.0.0 --port 8000
 
 ## Linux 服务器一键部署
 
-在 Linux 服务器上使用 root 执行以下命令即可自动从 GitHub 下载代码并安装。请先把命令中的仓库地址替换为你的实际 GitHub 仓库地址，并设置强管理员密码：
+在 Linux 服务器上使用 root 执行以下命令即可自动从本仓库下载代码并安装。只需要设置强管理员密码，无需再手动配置仓库地址：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/owner/repo/main/scripts/deploy-linux.sh | sudo DEPLOY_REPO_URL=https://github.com/owner/repo.git ADMIN_PASSWORD='请替换为强密码' PORT=8000 bash
+curl -fsSL https://raw.githubusercontent.com/iCyrene093/GitHubProxy/main/scripts/deploy-linux.sh | sudo ADMIN_PASSWORD='请替换为强密码' PORT=8000 bash
 ```
 
 如需部署其他分支或标签，可额外设置 `DEPLOY_REF`：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/owner/repo/main/scripts/deploy-linux.sh | sudo DEPLOY_REPO_URL=https://github.com/owner/repo.git DEPLOY_REF=main ADMIN_PASSWORD='请替换为强密码' PORT=8000 bash
+curl -fsSL https://raw.githubusercontent.com/iCyrene093/GitHubProxy/main/scripts/deploy-linux.sh | sudo DEPLOY_REF=main ADMIN_PASSWORD='请替换为强密码' PORT=8000 bash
 ```
 
-如果已经在服务器上安装了代码，也可以继续在源码目录中使用本地脚本部署：
+如需部署其他仓库，可以额外覆盖 `DEPLOY_REPO_URL`。如果已经在服务器上安装了代码，也可以继续在源码目录中使用本地脚本部署：
 
 ```bash
 sudo ADMIN_PASSWORD='请替换为强密码' PORT=8000 ./scripts/deploy-linux.sh
@@ -72,11 +72,13 @@ sudo journalctl -u github-release-proxy.service -f
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `ADMIN_PASSWORD` | `admin` | 后台登录密码，生产环境必须修改。 |
+| `ADMIN_PASSWORD` | 无 | 后台登录密码，生产环境必须设置为非默认值。 |
 | `SECRET_KEY` | 无 | Flask Cookie 签名密钥；未设置时应用会拒绝启动，部署脚本会在安装 Python 后自动生成。 |
 | `GITHUB_PROXY_DB` | `./data/github_proxy.sqlite3` | 白名单数据库路径。 |
-| `PORT` | `8000` | 开发模式监听端口。 |
+| `PORT` | `8000` | 服务监听端口。 |
 | `REQUEST_TIMEOUT` | `30` | 请求 GitHub 的超时时间（秒）。 |
+| `DEPLOY_REPO_URL` | `https://github.com/iCyrene093/GitHubProxy.git` | 部署脚本自动下载的源码仓库地址，通常无需设置。 |
+| `DEPLOY_REF` | `main` | 部署脚本下载的分支或标签。 |
 
 ## 安全边界
 

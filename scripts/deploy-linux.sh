@@ -7,7 +7,7 @@ PORT="${PORT:-8000}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SECRET_KEY="${SECRET_KEY:-}"
 ENV_FILE="${ENV_FILE:-/etc/github-release-proxy.env}"
-DEPLOY_REPO_URL="${DEPLOY_REPO_URL:-}"
+DEPLOY_REPO_URL="${DEPLOY_REPO_URL:-https://github.com/iCyrene093/GitHubProxy.git}"
 DEPLOY_REF="${DEPLOY_REF:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SOURCE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
@@ -36,7 +36,7 @@ apt-get install -y python3 python3-venv python3-pip git
 
 if [[ ! -f "$SOURCE_DIR/app.py" || ! -f "$SOURCE_DIR/requirements.txt" ]]; then
   if [[ -z "$DEPLOY_REPO_URL" ]]; then
-    echo "未检测到本地源码。请设置 DEPLOY_REPO_URL=https://github.com/owner/repo.git 以便自动从 GitHub 下载并安装。" >&2
+    echo "未检测到本地源码，且 DEPLOY_REPO_URL 为空。请设置 DEPLOY_REPO_URL=https://github.com/owner/repo.git 以便自动从 GitHub 下载并安装。" >&2
     exit 1
   fi
   TMP_SOURCE_DIR="$(mktemp -d)"
