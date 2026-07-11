@@ -217,6 +217,36 @@ class ReleaseListAssetFallbackTests(unittest.TestCase):
         fetch_github.assert_called_once_with("https://github.com/owner/repo/releases/expanded_assets/v1.0.0")
         self.assertTrue(app.page_has_asset_downloads(soup, "owner", "repo", "v1.0.0"))
 
+    def test_append_missing_asset_fragments_accepts_primary_link_release_titles(self):
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <div class="Box-row">
+                <div class="flex-1 wb-break-word">
+                  <a class="Link--primary" href="/owner/repo/releases/tag/v1.0.0">Release v1.0.0</a>
+                </div>
+                <details open>
+                  <summary>Assets <span>1</span></summary>
+                  <include-fragment>Loading</include-fragment>
+                </details>
+              </div>
+            </body></html>
+            """,
+            "html.parser",
+        )
+
+        with patch(
+            "app.fetch_github",
+            return_value=Mock(
+                status_code=200,
+                text='<a href="/owner/repo/releases/download/v1.0.0/new.zip">new.zip</a>',
+            ),
+        ) as fetch_github:
+            app.append_missing_asset_fragments_for_release_list(soup, "owner", "repo")
+
+        fetch_github.assert_called_once_with("https://github.com/owner/repo/releases/expanded_assets/v1.0.0")
+        self.assertTrue(app.page_has_asset_downloads(soup, "owner", "repo", "v1.0.0"))
+
 
 if __name__ == "__main__":
     unittest.main()

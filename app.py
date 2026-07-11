@@ -374,6 +374,10 @@ def tag_link_is_release_title(link):
         if any(body_class in class_text for body_class in release_body_classes):
             return False
 
+    link_classes = set(link.get("class") or [])
+    if "Link--primary" in link_classes:
+        return True
+
     for parent in link.parents:
         classes = parent.get("class") or []
         class_text = " ".join(classes).lower()
@@ -384,6 +388,8 @@ def tag_link_is_release_title(link):
                 return False
             title_classes = {"f1", "flex-auto", "min-width-0", "text-normal"}
             if title_classes.issubset(set(classes)):
+                return True
+            if {"flex-1", "wb-break-word"}.issubset(set(classes)):
                 return True
         if parent.name in {"article", "section", "main", "body"}:
             return False
