@@ -44,6 +44,12 @@ case "$RESOLVED_DEST_DIR" in
     exit 1
     ;;
   *)
+    case "$SOURCE_DIR" in
+      "$RESOLVED_DEST_DIR"/*)
+        echo "源码目录不能位于部署目标内：$SOURCE_DIR 在 $RESOLVED_DEST_DIR 下" >&2
+        exit 1
+        ;;
+    esac
     rm -rf "$DEST_DIR"
     mkdir -p "$DEST_DIR"
     cp -a "$SOURCE_DIR/." "$DEST_DIR/"

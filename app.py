@@ -136,6 +136,23 @@ def final_release_url_is_allowed(final_url, owner, repo, release_type, release_t
         return is_allowed_release(owner, repo, "latest")
     return is_allowed_release(final_owner, final_repo, final_type, final_tag)
 
+
+def response_download_redirects_are_allowed(upstream, owner, repo, release_tag):
+    for response in [*upstream.history, upstream]:
+        parsed = urlparse(response.url)
+        if parsed.netloc.lower() != "github.com":
+            continue
+        match = ASSET_RE.match(response.url)
+        if not match:
+            continue
+        final_owner, final_repo, final_tag = match.group(1), match.group(2), match.group(3)
+        if final_owner.lower() != owner.lower() or final_repo.lower() != repo.lower():
+            return False
+        if final_tag != release_tag:
+            return False
+    return True
+
+
 def is_allowed_download(owner, repo, release_tag):
     if is_allowed_release(owner, repo, "tag", release_tag):
         return True
@@ -302,6 +319,9 @@ def download(encoded_url):
     if not is_allowed_download(owner, repo, release_tag):
         abort(403)
     upstream = fetch_github(target, stream=True)
+    if not response_download_redirects_are_allowed(upstream, owner, repo, release_tag):
+        upstream.close()
+        abort(403)
     excluded = {"content-encoding", "content-length", "transfer-encoding", "connection"}
     headers = [(k, v) for k, v in upstream.headers.items() if k.lower() not in excluded]
     return Response(upstream.iter_content(chunk_size=8192), status=upstream.status_code, headers=headers)
