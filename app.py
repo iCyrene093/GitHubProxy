@@ -291,10 +291,20 @@ def expand_asset_fragments(soup):
         fragment.replace_with(BeautifulSoup(upstream.text, "html.parser"))
 
 
+def tag_expanded_asset_url(tag):
+    for attr in ("href", "data-url", "data-href"):
+        value = tag.get(attr)
+        if not value:
+            continue
+        url = urljoin("https://github.com", value)
+        if is_expanded_asset_url(url):
+            return url
+    return None
+
+
 def mark_show_all_asset_controls(soup):
     for tag in soup.find_all(["a", "button"]):
-        label = tag.get_text(" ", strip=True).lower()
-        if "show all" not in label or "asset" not in label:
+        if not tag_expanded_asset_url(tag):
             continue
         tag["data-github-proxy-show-assets"] = "true"
         if tag.name == "a":
@@ -310,13 +320,20 @@ def append_asset_toggle_script(soup):
     script.string = """
 (() => {
   const hiddenSelectors = '[hidden], .d-none, .js-release-asset, .js-release-asset-read-more';
+  const hasHiddenAssetsOutsideControl = (root, control) => (
+    Array.from(root.querySelectorAll(hiddenSelectors)).some((node) => node !== control && !control.contains(node))
+  );
+  const assetRootFor = (control) => {
+    for (let root = control.parentElement; root && root !== document.body; root = root.parentElement) {
+      if (hasHiddenAssetsOutsideControl(root, control)) return root;
+    }
+    return document;
+  };
   document.addEventListener('click', (event) => {
     const control = event.target.closest('[data-github-proxy-show-assets="true"]');
     if (!control) return;
     event.preventDefault();
-    const release = control.closest('details, .Box, section, div');
-    const root = release || document;
-    root.querySelectorAll(hiddenSelectors).forEach((node) => {
+    assetRootFor(control).querySelectorAll(hiddenSelectors).forEach((node) => {
       node.hidden = false;
       node.removeAttribute('hidden');
       node.classList.remove('d-none');
